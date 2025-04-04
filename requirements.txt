@@ -1,0 +1,3 @@
+python-telegram-bot[ext]
+google-generativeai
+python-dotenv 
