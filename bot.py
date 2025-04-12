@@ -5,9 +5,10 @@ import google.generativeai as genai
 from urllib.parse import quote_plus
 from dotenv import load_dotenv
 from telegram import Update, ReplyParameters, PhotoSize, File
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, filters as Filters # Alias filters for clarity
 from typing import List, Optional
 import re
+import json
 
 # Load environment variables
 load_dotenv()
@@ -18,11 +19,72 @@ MAIN_CHANNEL_ID = os.getenv("MAIN_CHANNEL_ID")
 DISCUSSION_GROUP_IDS_STR = os.getenv("DISCUSSION_GROUP_IDS")
 
 # Configure logging
+# Define log file path
+LOG_FILE = "bot.log"
+
+# Basic config for console
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
-logging.getLogger("httpx").setLevel(logging.WARNING)
+
+# Create a logger instance
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO) # Ensure logger level is set
+
+# Prevent double logging if basicConfig already added a handler
+if logger.hasHandlers():
+    logger.handlers.clear()
+
+# Console Handler (optional, if you still want console output)
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
+logger.addHandler(console_handler)
+
+# File Handler (JSON)
+class JsonFormatter(logging.Formatter):
+    def format(self, record):
+        log_record = {
+            "timestamp": self.formatTime(record, self.datefmt),
+            "name": record.name,
+            "level": record.levelname,
+            "message": record.getMessage(),
+        }
+        if record.exc_info:
+            log_record['exc_info'] = self.formatException(record.exc_info)
+        return json.dumps(log_record)
+
+file_handler = logging.FileHandler(LOG_FILE)
+file_handler.setFormatter(JsonFormatter())
+logger.addHandler(file_handler)
+
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
+# --- Anonymous Naming ---
+CHEW_NAMES = [
+    "Chewer 🦷", "Chewy 🍬", "Chewbert 🤖", "Chewbacca 🐻", "Chewzilla 🦖",
+    "Chewster 😎", "Chewliette 💃", "SirChewsAlot 🏇", "Chewmeister 🧙‍♂️",
+    "Chewbacca Jr. 🐾", "MegaChew 💥", "Captain Chew 🧢", "Agent Chew 🕶️",
+    "Professor Chew 👓", "Doctor Chew 🩺", "ChewBro 🧍‍♂️", "ChewchewTrain 🚂",
+    "Chewrito 🌯", "ChewManji 🎲", "Chewlexa 📢", "Chewbiscuits 🍪", "Chewrambo 🎖️",
+    "Chewtopher ✨", "Chewbroski 🧊", "Chewbeard 🧔", "Chewthulu 🐙", "Chewnicorn 🦄",
+    "Chewpocalypse 🔥", "Chewfinity ♾️", "ChewMysterio 🌀", "Chewlock Holmes 🕵️‍♂️",
+    "Chewtron ⚡", "Chewzilla Returns 🎬", "Chewraffe 🦒", "Chewmander 🐉",
+    "Chewshroom 🍄", "Chewbubbles 🫧", "Chewkoala 🐨", "Chewdozer 🚜",
+    "Chewgoose 🪿", "Chewtato 🥔", "Chewstorm 🌪️", "Chewbug 🐛", "Chewnado 🌪️",
+    "Chewtoise 🐢", "Chewperman 🦸‍♂️", "Chewzilla X 🚀", "Chewmonaut 👨‍🚀",
+    "Chewbear 🧸", "Chewgeneer 🧑‍🔧", "Chewluminati 👁️", "Chewbean 🫘", "Chewtopia 🏝️",
+    "Chewzilla Jr. 👶🦖", "Chewblade 🗡️", "Chewberine 🐺", "Chewjam 🏀", "Chewboss 👔",
+    "Chewcraft 🧱", "Chewrrior 🛡️", "Chewzen 🧘‍♂️", "Chewminator 🤖", "Chewberry 🍓",
+    "Chewbathor ⚡🔨", "Chewphant 🐘", "Chewverse 🌌", "Chewpie 🥧", "Chewspresso ☕",
+    "Chewstache 👨‍🦰", "Chewlion 🦁", "Chewrocket 🚀", "Chewbeam 🔦", "Chewpop 🍭",
+    "Chewspike 🌵", "Chewchamp 🏆", "Chewbeans 🌱", "Chewphantom 👻", "Chewtronics 💻",
+    "Chewzilla Prime 🔱", "Chewbrawl 🥊", "Chewdini 🎩", "Chewlord 🧛", "Chewtastic 🌟",
+    "Chewzilla 9000 🤯", "Chewcrash 💥", "Chewclops 👁️", "Chewfinity Gauntlet 🧤",
+    "Chewhawk 🦅", "Chewblade Runner 🏃‍♂️", "Chewtank 🛡️", "Chewquake 🌍", "Chewmaster 🧠",
+    "ChewBaron 💼", "ChewKnight ⚔️", "Chewboy 🤠", "Chewsicle 🍡", "Chewzanator 🔧",
+    "Chewrage 😤", "Chewlebrity 📸", "Chewception 🌀", "Chewpocalypse Now ☢️",
+    "Chewblitz ⚡", "Chewnami 🌊", "Chewbot 🤖", "Chewborg 🦾", "Chewzilla Max 🛸"
+]
 
 # Process Discussion Group IDs
 DISCUSSION_GROUP_IDS: List[str] = []
@@ -119,69 +181,98 @@ def escape_markdown_v2(text: str) -> str:
     return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
 
 async def _process_command(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str, prompt_template: str):
-    """Generic handler for reply-based commands like /explain and /summarise."""
+    """Generic handler for reply-based commands like /explain and /summarise. Anonymizes the command."""
     command = f"/{action}"
-    logger.info(f"Received {command} command from user {update.effective_user.id} in chat {update.effective_chat.id}")
+    command_message = update.message
+    chat_id = command_message.chat_id
+    user_id = command_message.from_user.id
+    command_message_id = command_message.message_id
+    bot_id = context.bot.id
+
+    # Should not happen for user commands, but safeguard
+    if user_id == bot_id:
+        return
+
+    logger.info(f"Received {command} command (msg_id: {command_message_id}) from user {user_id} in chat {chat_id}")
 
     if not model:
         logger.error(f"Gemini model not configured. Cannot process {command}.")
+        # Try to delete the command even if model fails
+        try:
+            await context.bot.delete_message(chat_id=chat_id, message_id=command_message_id)
+            logger.info(f"Deleted command message {command_message_id} even though model is not configured.")
+        except Exception as delete_err:
+            logger.error(f"Failed to delete command message {command_message_id} after model config check: {delete_err}")
         await update.message.reply_text("Sorry, the AI backend is not configured.")
         return
 
     # Check if the command is a reply
-    if not update.message.reply_to_message:
-        await update.message.reply_text(f"Please reply to the message you want me to {action} with {command}.")
+    original_message = command_message.reply_to_message
+    if not original_message:
+        # Don't delete if it wasn't a valid reply command initially
+        await command_message.reply_text(f"Please reply to the message you want me to {action} with {command}.")
         return
 
     # Check if the command is in an allowed discussion group
-    if str(update.effective_chat.id) not in DISCUSSION_GROUP_IDS:
-        logger.warning(f"Ignoring {command} in non-discussion group chat: {update.effective_chat.id}")
+    if str(chat_id) not in DISCUSSION_GROUP_IDS:
+        logger.warning(f"Ignoring {command} in non-discussion group chat: {chat_id}")
+        # Don't delete if it's not in the right group
         return
 
-    original_message = update.message.reply_to_message
+    # --- Anonymize the command message ---
+    try:
+        await context.bot.delete_message(chat_id=chat_id, message_id=command_message_id)
+        logger.info(f"Successfully deleted command message {command_message_id}")
+    except Exception as delete_err:
+        logger.error(f"Failed to delete command message {command_message_id}: {delete_err}", exc_info=True)
+        # Proceed even if deletion fails, but log it.
+
+    # --- Process the original message ---
     message_text = original_message.text or original_message.caption # Handle text and captions
+    original_message_id = original_message.message_id # ID of the message being explained/summarised
 
     if not message_text:
-        logger.warning(f"{command} used on message {original_message.message_id} with no text/caption.")
-        await update.message.reply_text(f"Sorry, I can only {action} messages with text content or captions.",
-                                        reply_parameters=ReplyParameters(message_id=original_message.message_id))
+        logger.warning(f"{command} used on message {original_message_id} with no text/caption.")
+        # Send reply to the original message's context
+        await context.bot.send_message(chat_id=chat_id,
+                                       text=f"Sorry, I can only {action} messages with text content or captions.",
+                                       reply_parameters=ReplyParameters(message_id=original_message_id))
         return
 
-    logger.info(f"Attempting to {action} message ID {original_message.message_id}")
-    # Indicate processing
+    logger.info(f"Attempting to {action} original message ID {original_message_id}")
+    # Indicate processing (typing action in the chat)
     try:
-        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action='typing')
+        await context.bot.send_chat_action(chat_id=chat_id, action='typing')
     except Exception as e:
-        logger.warning(f"Could not send typing action in chat {update.effective_chat.id}: {e}")
-
+        logger.warning(f"Could not send typing action in chat {chat_id}: {e}")
 
     try:
-        # Prepare the prompt for Gemini
+        # Prepare the prompt for Gemini using the original message's text
         prompt = prompt_template.format(message_text=message_text)
 
         response = await model.generate_content_async(prompt)
         result_text = response.text
 
-        logger.info(f"Generated {action} for message ID {original_message.message_id}")
+        logger.info(f"Generated {action} for original message ID {original_message_id}")
 
-        # Reply directly to the command message
+        # Reply to the ORIGINAL message the user replied to, not the deleted command
         await context.bot.send_message(
-            chat_id=update.effective_chat.id,
+            chat_id=chat_id,
             text=result_text,
-            reply_parameters=ReplyParameters(message_id=update.message.message_id)
+            reply_parameters=ReplyParameters(message_id=original_message_id) # Reply to original post
         )
 
     except Exception as e:
-        logger.error(f"Error generating {action} for message ID {original_message.message_id}: {e}", exc_info=True)
+        logger.error(f"Error generating {action} for original message ID {original_message_id}: {e}", exc_info=True)
         try:
-            # Try to send error message back to the chat, replying to the command
+            # Try to send error message back to the chat, replying to the original message
             await context.bot.send_message(
-                chat_id=update.effective_chat.id,
+                chat_id=chat_id,
                 text=f"Sorry, I encountered an error trying to {action} that: {type(e).__name__}",
-                reply_parameters=ReplyParameters(message_id=update.message.message_id)
+                reply_parameters=ReplyParameters(message_id=original_message_id) # Reply to original post
             )
         except Exception as send_error:
-            logger.error(f"Failed to send error message to chat {update.effective_chat.id}: {send_error}", exc_info=True)
+            logger.error(f"Failed to send error message to chat {chat_id}: {send_error}", exc_info=True)
 
 
 # --- Auto Handler ---
@@ -357,6 +448,88 @@ async def handle_discussion_forward(update: Update, context: ContextTypes.DEFAUL
         logger.debug(f"handle_discussion_forward: No pending explanation found for channel post {original_channel_post_id}.")
 
 
+# --- Anonymous Comment Handler ---
+async def handle_anonymous_comment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handles regular messages in discussion groups to make them anonymous."""
+    message = update.message
+    chat_id = message.chat_id
+    user_id = message.from_user.id
+    bot_id = context.bot.id
+
+    # Ignore messages from the bot itself
+    if user_id == bot_id:
+        return
+
+    logger.info(f"handle_anonymous_comment: Received message {message.message_id} from user {user_id} in group {chat_id}")
+
+    # Basic check if it's in a configured discussion group (already filtered, but good practice)
+    if str(chat_id) not in DISCUSSION_GROUP_IDS:
+        logger.warning(f"handle_anonymous_comment: Message {message.message_id} received in non-discussion group {chat_id}. Filter should have caught this.")
+        return
+
+    original_message_id = message.message_id
+    reply_to_id = message.reply_to_message.message_id if message.reply_to_message else None
+    content_type = message.effective_attachment.__class__.__name__ if message.effective_attachment else "text"
+
+    logger.info(f"handle_anonymous_comment: Anonymizing message {original_message_id} (type: {content_type}) replying to {reply_to_id}")
+
+    # --- Assign or retrieve anonymous name ---
+    if 'user_anon_names' not in context.bot_data:
+        context.bot_data['user_anon_names'] = {}
+    if 'anon_name_index' not in context.bot_data:
+        context.bot_data['anon_name_index'] = 0
+
+    user_anon_map = context.bot_data['user_anon_names']
+    anon_name = ""
+
+    if user_id in user_anon_map:
+        anon_name = user_anon_map[user_id]
+        logger.debug(f"Found existing anon name for user {user_id}: {anon_name}")
+    else:
+        # Assign a new name
+        name_index = context.bot_data['anon_name_index']
+        anon_name = CHEW_NAMES[name_index % len(CHEW_NAMES)] # Cycle through names
+        user_anon_map[user_id] = anon_name
+        context.bot_data['anon_name_index'] = name_index + 1 # Increment for next user
+        # Mark bot_data as modified if using certain persistence backends (though default PicklePersistence usually handles this)
+        context.bot_data.setdefault('_modified', True)
+        logger.info(f"Assigned new anon name to user {user_id}: {anon_name} (Index: {name_index})")
+
+    anon_prefix = f"[{anon_name}]: " # Use the assigned/retrieved name
+
+    try:
+        # 1. Delete the original message
+        await context.bot.delete_message(chat_id=chat_id, message_id=original_message_id)
+        logger.info(f"handle_anonymous_comment: Deleted original message {original_message_id}")
+
+        # 2. Repost the content anonymously with prefix
+        if message.text:
+            await context.bot.send_message(chat_id=chat_id, text=f"{anon_prefix}{message.text}", reply_to_message_id=reply_to_id)
+        elif message.photo:
+            # Send the largest photo with prefixed caption
+            caption_text = f"{anon_prefix}{message.caption}" if message.caption else anon_prefix.strip() # Add prefix, handle None caption
+            await context.bot.send_photo(chat_id=chat_id, photo=message.photo[-1].file_id, caption=caption_text, reply_to_message_id=reply_to_id)
+        elif message.sticker:
+             # Stickers don't have text/captions to prefix easily. Send as is for now.
+             # Optionally, could send a separate text message attributing it, but might be noisy.
+             await context.bot.send_sticker(chat_id=chat_id, sticker=message.sticker.file_id, reply_to_message_id=reply_to_id)
+        # Add more handlers for other types (video, voice, document etc.) if needed
+        # elif message.video:
+        #     caption_text = f"{anon_prefix}{message.caption}" if message.caption else anon_prefix.strip()
+        #     await context.bot.send_video(chat_id=chat_id, video=message.video.file_id, caption=message.caption, reply_to_message_id=reply_to_id)
+        else:
+            logger.warning(f"handle_anonymous_comment: Unsupported message type '{content_type}' for anonymization in message {original_message_id}. Original deleted.")
+            # Optionally send a placeholder message with prefix
+            await context.bot.send_message(chat_id=chat_id, text=f"{anon_prefix}[Anonymized message of unsupported type]", reply_to_message_id=reply_to_id)
+
+        logger.info(f"handle_anonymous_comment: Successfully anonymized message {original_message_id} with prefix '{anon_prefix.strip()}'")
+
+    except Exception as e:
+        logger.error(f"handle_anonymous_comment: Failed to anonymize message {original_message_id}: {e}", exc_info=True)
+        # Decide if you want to notify the user or group about the failure
+        # Example: await context.bot.send_message(chat_id=chat_id, text=f"Debug: Failed to anonymize message {original_message_id}. Error: {e}", reply_to_message_id=reply_to_id)
+
+
 # --- Command Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Sends explanation on /start"""
@@ -371,7 +544,7 @@ async def summarise_message(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     await _process_command(update, context, action="summarise", prompt_template=SUMMARISE_PROMPT_TEMPLATE)
 
 
-def main() -> None:
+async def main() -> None: # Make main async
     """Start the bot."""
     # --- Pre-run Checks ---
     if not TELEGRAM_BOT_TOKEN:
@@ -392,6 +565,14 @@ def main() -> None:
     # Create the Application
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
+    # Initialize the application first to fetch bot details
+    await application.initialize()
+    logger.info("Application initialized.")
+
+    # Get bot ID for filtering its own messages *after* initialization
+    bot_id = application.bot.id
+    logger.info(f"Bot ID: {bot_id}")
+
     # Register handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("explain", explain_message))
@@ -408,15 +589,34 @@ def main() -> None:
     # It also relies on the bot *not* having privacy mode enabled to see all messages.
     application.add_handler(MessageHandler(
         filters.Chat(chat_id=[int(gid) for gid in DISCUSSION_GROUP_IDS if gid.startswith('-')]) # Filter for specific group IDs
-        & filters.UpdateType.MESSAGE 
-        & filters.FORWARDED, 
+        & Filters.UpdateType.MESSAGE
+        & Filters.FORWARDED,
         handle_discussion_forward
     ))
 
-    # Run the bot
-    logger.info("Starting bot...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    # Add handler for anonymous comments in discussion groups
+    # This should come AFTER specific handlers like commands and forwards
+    # It filters for messages in the discussion groups that are NOT commands, NOT forwards, and NOT from the bot itself.
+    application.add_handler(MessageHandler(
+        Filters.Chat(chat_id=[int(gid) for gid in DISCUSSION_GROUP_IDS if gid.startswith('-')]) # Specific groups
+        & Filters.UpdateType.MESSAGE                                                          # Regular messages
+        & ~Filters.COMMAND                                                                    # Exclude commands
+        & ~Filters.FORWARDED                                                                  # Exclude forwards
+        & ~Filters.User(user_id=bot_id),                                                      # Exclude bot's own messages
+        handle_anonymous_comment
+    ))
+
+
+    # Start the bot components
+    logger.info("Starting bot polling...")
+    await application.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+    await application.start()
+    logger.info("Bot started and polling.")
+
+    # Keep the script running until interrupted (e.g., Ctrl+C)
+    await asyncio.Future() # This will wait indefinitely
 
 
 if __name__ == "__main__":
-    main() 
+    # Run the async main function
+    asyncio.run(main())
